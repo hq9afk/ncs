@@ -1,6 +1,7 @@
 #include "window_handler.h"
 #include "errors.h"
 
+#include <algorithm>
 #include <cstring>
 
 ShaderWindowHandler::ShaderWindowHandler(ShaderProps *shaderProps,
@@ -33,11 +34,12 @@ void ShaderWindowHandler::registryGlobal(void *data, wl_registry *reg,
         self->compositor = (wl_compositor *)wl_registry_bind(
             reg, name, &wl_compositor_interface, 4);
     else if (strcmp(interface, xdg_wm_base_interface.name) == 0)
-        self->wmBase = (xdg_wm_base *)wl_registry_bind(reg, name,
-                                                       &xdg_wm_base_interface, 1);
+        self->wmBase = (xdg_wm_base *)wl_registry_bind(
+            reg, name, &xdg_wm_base_interface, 1);
     else if (strcmp(interface, zxdg_decoration_manager_v1_interface.name) == 0)
-        self->decorationManager = (zxdg_decoration_manager_v1 *)wl_registry_bind(
-            reg, name, &zxdg_decoration_manager_v1_interface, 1);
+        self->decorationManager =
+            (zxdg_decoration_manager_v1 *)wl_registry_bind(
+                reg, name, &zxdg_decoration_manager_v1_interface, 1);
 }
 
 void ShaderWindowHandler::registryGlobalRemove(void *data, wl_registry *reg,
@@ -82,12 +84,18 @@ void ShaderWindowHandler::initEGL() {
     eglBindAPI(EGL_OPENGL_ES_API);
 
     const EGLint configAttribs[] = {
-        EGL_SURFACE_TYPE,    EGL_WINDOW_BIT,
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
-        EGL_RED_SIZE,        8,
-        EGL_GREEN_SIZE,      8,
-        EGL_BLUE_SIZE,       8,
-        EGL_ALPHA_SIZE,      8,
+        EGL_SURFACE_TYPE,
+        EGL_WINDOW_BIT,
+        EGL_RENDERABLE_TYPE,
+        EGL_OPENGL_ES3_BIT,
+        EGL_RED_SIZE,
+        8,
+        EGL_GREEN_SIZE,
+        8,
+        EGL_BLUE_SIZE,
+        8,
+        EGL_ALPHA_SIZE,
+        8,
         EGL_NONE,
     };
     EGLConfig config;
@@ -105,7 +113,7 @@ void ShaderWindowHandler::initEGL() {
         Errors::throwError("eglCreateContext failed", "", "In");
 
     eglWindow = wl_egl_window_create(surface, props->surfaceWidth,
-                                    props->surfaceHeight);
+                                     props->surfaceHeight);
     eglSurface = eglCreateWindowSurface(eglDisplay, config,
                                         (EGLNativeWindowType)eglWindow, NULL);
     if (eglSurface == EGL_NO_SURFACE)
@@ -178,10 +186,33 @@ void ShaderWindowHandler::setup() {
 void ShaderWindowHandler::applyResize(int width, int height) {
     wl_egl_window_resize(eglWindow, width, height, 0, 0);
 
-    // Only the surface changed; the render canvas is fixed, so the shader
-    // pipeline stays valid. render() re-centers the blit off these values.
     shaderProgram.shaderProps->surfaceWidth = width;
     shaderProgram.shaderProps->surfaceHeight = height;
+
+    // Dynamically scale the canvas to half the smaller window dimension
+    int newCanvasSize = std::min(width, height) / 2;
+    shaderProgram.shaderProps->windowWidth = newCanvasSize;
+    shaderProgram.shaderProps->windowHeight = newCanvasSize;
+
+    // Clean up the existing shader stages to prevent VRAM leaks
+    ShaderStage *currentStage = shaderProgram.startStage;
+    while (currentStage != NULL) {
+        ShaderStage *nextStage = currentStage->next;
+        delete currentStage;
+        currentStage = nextStage;
+    }
+    shaderProgram.startStage = NULL;
+
+    // Clean up atomic textures
+    if (shaderProgram.atomicImageTexture != NULL) {
+        glDeleteTextures(shaderProgram.shaderProps->atomicTextures,
+                         shaderProgram.atomicImageTexture);
+        delete[] shaderProgram.atomicImageTexture;
+        shaderProgram.atomicImageTexture = NULL;
+    }
+
+    // Trigger a pipeline and FBO rebuild on the next frame
+    shaderProgram.ticks = 0;
 }
 
 void ShaderWindowHandler::applyPendingResize() {
