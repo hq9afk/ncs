@@ -1,13 +1,10 @@
-#version 320 es
+#version 100
 precision highp float;
 precision highp int;
-precision highp sampler2D;
 
 uniform vec2 resolution;
 
 uniform sampler2D tex;
-
-out vec4 FragColor;
 
 #ifndef TWOPI
 #define TWOPI 6.28318530718
@@ -60,7 +57,7 @@ void main()
 #expand glow = glow#; postProcessingNumber
 
     vec2 uv = (glow.coords) / resolution.xy;
-    vec4 prevColor = texture(tex, gl_FragCoord.xy / resolution.xy);
+    vec4 prevColor = texture2D(tex, gl_FragCoord.xy / resolution.xy);
 
     vec2 glowRadius = (glow.size) / resolution.xy;
     vec4 Color = vec4(0);
@@ -74,17 +71,17 @@ void main()
             vec2 coords = uv + glowRadius * i * vec2(cos(d), sin(d));
 
             if (coords.x > 0.0 && coords.x < 1.0 && coords.y > 0.0 && coords.y < 1.0)
-                Color += texture(tex, coords);
+                Color += texture2D(tex, coords);
         }
     }
 
     Color /= (glow.quality) * (glow.directions);
 
-    FragColor = (vec4(glow.color.xyz * glow.color.w, glow.color.w)) * glow.intensity * length(Color);
+    gl_FragColor = (vec4(glow.color.xyz * glow.color.w, glow.color.w)) * glow.intensity * length(Color);
 
-    FragColor = addColors(glow.blendMode, mix(prevColor, FragColor, glow.onTop), mix(FragColor, prevColor, glow.onTop));
+    gl_FragColor = addColors(glow.blendMode, mix(prevColor, gl_FragColor, glow.onTop), mix(gl_FragColor, prevColor, glow.onTop));
 
-    FragColor *= glowLightVal(length(FragColor), glow.brightnessOffset, glow.lightStrength);
+    gl_FragColor *= glowLightVal(length(gl_FragColor), glow.brightnessOffset, glow.lightStrength);
 
-    FragColor.w = mix(prevColor.w, FragColor.w, glow.mixAlpha * 0.5);
+    gl_FragColor.w = mix(prevColor.w, gl_FragColor.w, glow.mixAlpha * 0.5);
 }

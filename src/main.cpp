@@ -40,7 +40,6 @@ static ShaderWindowHandler *buildWindow() {
     shaderProps->shaderName = (char *)Defaults::shaderName;
     shaderProps->className = (char *)Defaults::className;
     shaderProps->configFileName = (char *)Defaults::configFileName;
-    shaderProps->atomicTextures = Defaults::atomicTextures;
     shaderProps->fps = Defaults::fps;
     shaderProps->windowWidth = Defaults::sphereCanvas;
     shaderProps->windowHeight = Defaults::sphereCanvas;

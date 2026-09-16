@@ -7,31 +7,75 @@
 
 // Desktop stored these as normalized GL_R16 (FFT path, clamps to [0, 1]) and
 // GL_R16_SNORM (raw path, clamps to [-1, 1]) and let the driver convert from
-// float on upload. GLES exposes both via GL_EXT_texture_norm16 but only accepts
-// integer pixel data, so convert here. Keeping the exact formats preserves the
-// per-write clamping the rest of the pipeline was tuned against.
+// float on upload. GLES exposes both via GL_EXT_texture_rg (base GL_RED format)
+// + GL_EXT_texture_norm16 (the 16-bit normalized types), but neither is core
+// on ES 2.0 (unlike ES 3.x, where GL_RED/norm16 formats are core). Use them
+// opportunistically when present (mirrors the border-clamp extension check in
+// shaders.h); otherwise fall back to GL_LUMINANCE + GL_UNSIGNED_BYTE, which is
+// core on ES 2.0 but only 8-bit, so audio precision degrades on hardware
+// lacking those extensions.
+static bool audioNorm16Supported()
+{
+    static int cached = -1;
+    if (cached < 0)
+        cached = (epoxy_has_gl_extension("GL_EXT_texture_rg") &&
+                     epoxy_has_gl_extension("GL_EXT_texture_norm16"))
+            ? 1
+            : 0;
+    return cached == 1;
+}
+
 static void audioTexImage2D(GLsizei width, bool applyFFT, const float* data)
 {
+    bool norm16 = audioNorm16Supported();
+
     if (data == NULL) {
-        glTexImage2D(GL_TEXTURE_2D, 0, applyFFT ? GL_R16 : GL_R16_SNORM, width, 1, 0,
-            GL_RED, applyFFT ? GL_UNSIGNED_SHORT : GL_SHORT, NULL);
+        if (norm16)
+            glTexImage2D(GL_TEXTURE_2D, 0, applyFFT ? GL_R16 : GL_R16_SNORM, width, 1, 0,
+                GL_RED, applyFFT ? GL_UNSIGNED_SHORT : GL_SHORT, NULL);
+        else
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, width, 1, 0,
+                GL_LUMINANCE, GL_UNSIGNED_BYTE, NULL);
         return;
     }
 
     if (applyFFT) {
-        std::vector<uint16_t> buf((size_t)width);
-        for (GLsizei i = 0; i < width; i++) {
-            float v = data[i] < 0.0f ? 0.0f : (data[i] > 1.0f ? 1.0f : data[i]);
-            buf[i] = (uint16_t)(v * 65535.0f + 0.5f);
+        if (norm16) {
+            std::vector<uint16_t> buf((size_t)width);
+            for (GLsizei i = 0; i < width; i++) {
+                float v = data[i] < 0.0f ? 0.0f : (data[i] > 1.0f ? 1.0f : data[i]);
+                buf[i] = (uint16_t)(v * 65535.0f + 0.5f);
+            }
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_R16, width, 1, 0, GL_RED, GL_UNSIGNED_SHORT, buf.data());
+        } else {
+            std::vector<uint8_t> buf((size_t)width);
+            for (GLsizei i = 0; i < width; i++) {
+                float v = data[i] < 0.0f ? 0.0f : (data[i] > 1.0f ? 1.0f : data[i]);
+                buf[i] = (uint8_t)(v * 255.0f + 0.5f);
+            }
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, width, 1, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, buf.data());
         }
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_R16, width, 1, 0, GL_RED, GL_UNSIGNED_SHORT, buf.data());
     } else {
-        std::vector<int16_t> buf((size_t)width);
-        for (GLsizei i = 0; i < width; i++) {
-            float v = data[i] < -1.0f ? -1.0f : (data[i] > 1.0f ? 1.0f : data[i]);
-            buf[i] = (int16_t)(v * 32767.0f + (v < 0.0f ? -0.5f : 0.5f));
+        if (norm16) {
+            std::vector<int16_t> buf((size_t)width);
+            for (GLsizei i = 0; i < width; i++) {
+                float v = data[i] < -1.0f ? -1.0f : (data[i] > 1.0f ? 1.0f : data[i]);
+                buf[i] = (int16_t)(v * 32767.0f + (v < 0.0f ? -0.5f : 0.5f));
+            }
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_R16_SNORM, width, 1, 0, GL_RED, GL_SHORT, buf.data());
+        } else {
+            // No SNORM-equivalent core ES 2.0 format: bias/scale [-1, 1] into
+            // [0, 255] like a manual SNORM. Unlike the FFT path above, shaders
+            // reading this texture would need to unbias (*2.0 - 1.0); the app
+            // always runs with applyFFT = true (see Defaults::applyFFT), so
+            // this branch is currently unreached.
+            std::vector<uint8_t> buf((size_t)width);
+            for (GLsizei i = 0; i < width; i++) {
+                float v = data[i] < -1.0f ? -1.0f : (data[i] > 1.0f ? 1.0f : data[i]);
+                buf[i] = (uint8_t)((v * 0.5f + 0.5f) * 255.0f + 0.5f);
+            }
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, width, 1, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, buf.data());
         }
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_R16_SNORM, width, 1, 0, GL_RED, GL_SHORT, buf.data());
     }
 }
 
@@ -141,6 +185,7 @@ void AudioShaderStages::applyGravityPassShader(unsigned int audioTextureSize, in
         glBindTexture(GL_TEXTURE_2D, offset == 1 ? audioRTexture : audioLTexture);
         glUniform1i(passStage->uniformLocations[locationName],
             offset);
+        glUniform1i(passStage->uniformLocations["audioSize"], (int)audioTextureSize);
 
         glEnable(GL_BLEND);
         glBlendEquation(GL_MAX);
@@ -167,6 +212,7 @@ void AudioShaderStages::applyGravityPassShader(unsigned int audioTextureSize, in
         glUniform1i(gravityStage
                         ->uniformLocations[locationName],
             offset);
+        glUniform1i(gravityStage->uniformLocations["audioSize"], (int)audioTextureSize);
 
         glViewport(0, 0, audioTextureSize, 1);
         gravityStage->vertexShader->draw();
@@ -190,6 +236,7 @@ void AudioShaderStages::applyGravityPassShader(unsigned int audioTextureSize, in
                           ->outputLTexture);
     glUniform1i(passStage->uniformLocations[locationName],
         offset);
+    glUniform1i(passStage->uniformLocations["audioSize"], (int)audioTextureSize);
 
     glViewport(0, 0, audioTextureSize, 1);
 
@@ -197,6 +244,7 @@ void AudioShaderStages::applyGravityPassShader(unsigned int audioTextureSize, in
     averageStage->bindAudio(offset, audioTextureSize, errorContext);
 
     glUseProgram(averageStage->glProgram);
+    glUniform1i(averageStage->uniformLocations["audioSize"], (int)audioTextureSize);
 
     for (int t = 0; t < numGravityFBOs; ++t) {
         GLuint c_off = offset + 1 + t;

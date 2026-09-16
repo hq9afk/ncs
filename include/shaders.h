@@ -35,18 +35,13 @@ public:
 class FragmentShaderCompilationArgs : public ShaderCompilationArgs {
 
 public:
-    int numAtomicTextures;
-    unsigned int* atomicImageTexture;
     FragmentShaderCompilationArgs(int windowWidth, int windowHeight, unsigned int* glProgram,
-        std::map<std::string, int>* uniformLocations,
-        int numAtomicTextures = 0, unsigned int* atomicImageTexture = NULL)
+        std::map<std::string, int>* uniformLocations)
     {
         this->windowWidth = windowWidth;
         this->windowHeight = windowHeight;
         this->glProgram = glProgram;
         this->uniformLocations = uniformLocations;
-        this->numAtomicTextures = numAtomicTextures;
-        this->atomicImageTexture = atomicImageTexture;
     }
 };
 
@@ -68,11 +63,11 @@ public:
 
 class VertexShader : public Shader {
 private:
-    const std::string defaultVertexShaderSource = "#version 320 es\n"
-                                                  "layout(location = 0) in vec3 aPos;\n"
+    const std::string defaultVertexShaderSource = "#version 100\n"
+                                                  "attribute vec3 aPos;\n"
                                                   "void main()\n"
                                                   "{\n"
-                                                  "    gl_Position = vec4(aPos.x, aPos.y, 0.0f, 1.0);\n"
+                                                  "    gl_Position = vec4(aPos.x, aPos.y, 0.0, 1.0);\n"
                                                   "}";
 
 protected:
@@ -81,7 +76,7 @@ protected:
         ShaderCompilationArgs* args);
 
 public:
-    unsigned int vertexArrayObject = 0, vertexBufferObject = 0;
+    unsigned int vertexBufferObject = 0;
 
     const GLfloat buf[18] = { -1, -1, 0, 1, -1, 0, -1, 1, 0,
         1, 1, 0, 1, -1, 0, -1, 1, 0 };
@@ -90,6 +85,13 @@ public:
 
         ShaderCompilationArgs* args);
     void draw(unsigned int* texture = NULL);
+
+    // Draws `count` GL_POINTS sourced from `pointVbo` (2 floats per vertex, the
+    // pixel each point occupies) with additive blending, instead of the
+    // full-screen quad. Used for the particle-accumulation stage, which on
+    // ES 3.2 scattered into an atomic image and here scatters via the blend
+    // stage instead.
+    void drawPoints(unsigned int pointVbo, int count);
 
     ~VertexShader();
 };
@@ -110,7 +112,8 @@ public:
         glGenTextures(1, &outputTexture);
         glBindTexture(GL_TEXTURE_2D, outputTexture);
 
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, windowWidth, windowHeight, 0, GL_RGBA,
+        // ES 2.0 glTexImage2D takes an unsized internal format (must match `format`).
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, windowWidth, windowHeight, 0, GL_RGBA,
             GL_UNSIGNED_BYTE, NULL);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -129,7 +132,9 @@ public:
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         }
 
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, frameBufferObject);
+        // ES 2.0 has a single GL_FRAMEBUFFER target (no separate read/draw
+        // targets -- that split is ES 3.0+).
+        glBindFramebuffer(GL_FRAMEBUFFER, frameBufferObject);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
             outputTexture, 0);
 

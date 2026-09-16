@@ -1,6 +1,81 @@
 #include <epoxy/gl.h>
 
+#include <cmath>
+#include <string>
+#include <vector>
+
 #include "shader_program.h"
+
+void ParticleGrid::destroy()
+{
+    if (vbo != 0) {
+        glDeleteBuffers(1, &vbo);
+        vbo = 0;
+    }
+    pointCount = 0;
+}
+
+ParticleGrid::~ParticleGrid() { destroy(); }
+
+static float particleThinHash(float px, float py)
+{
+    // Mirrors shaders/ncs.glsl's per-pixel dropout hash exactly:
+    // fract(sin(mod(dot(floor(gl_FragCoord.xy), vec2(127.1, 311.7)), TWOPI)) * 43758.5453123)
+    const float TWOPI = 6.2831853071794f;
+    float d = px * 127.1f + py * 311.7f;
+    float m = fmodf(d, TWOPI); // dot() is always >= 0 here, so this matches GLSL mod()
+    float s = sinf(m) * 43758.5453123f;
+    return s - floorf(s);
+}
+
+void ParticleGrid::build(int canvasWidth, int canvasHeight)
+{
+    destroy();
+
+    const float particleThin = 0.12f; // shaders/ncs.glsl: #define particleThin 0.12
+
+    std::vector<float> points;
+    points.reserve((size_t)canvasWidth * (size_t)canvasHeight * 2);
+
+    for (int py = 0; py < canvasHeight; py++) {
+        for (int px = 0; px < canvasWidth; px++) {
+            if (particleThinHash((float)px, (float)py) < particleThin)
+                continue;
+            // gl_FragCoord for pixel (px, py) is (px + 0.5, py + 0.5).
+            points.push_back((float)px + 0.5f);
+            points.push_back((float)py + 0.5f);
+        }
+    }
+
+    pointCount = (int)(points.size() / 2);
+
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(points.size() * sizeof(float)), points.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+static const std::string blitVertexShaderSource = "#version 100\n"
+                                                   "attribute vec3 aPos;\n"
+                                                   "void main()\n"
+                                                   "{\n"
+                                                   "    gl_Position = vec4(aPos.x, aPos.y, 0.0, 1.0);\n"
+                                                   "}";
+
+// gl_FragCoord is always in window (not viewport-relative) coordinates, so the
+// non-zero-origin destination viewport this draws into (see render()) needs
+// `offset` subtracted before normalizing by `resolution` (the source canvas
+// size), unlike the other full-screen-quad stages that always render at
+// viewport origin (0, 0).
+static const std::string blitFragmentShaderSource = "#version 100\n"
+                                                     "precision highp float;\n"
+                                                     "uniform vec2 resolution;\n"
+                                                     "uniform vec2 offset;\n"
+                                                     "uniform sampler2D tex;\n"
+                                                     "void main()\n"
+                                                     "{\n"
+                                                     "    gl_FragColor = texture2D(tex, (gl_FragCoord.xy - offset) / resolution.xy);\n"
+                                                     "}";
 
 void ShaderProgram::initializeShaders() {
     startStage = new ShaderStage;
@@ -13,12 +88,6 @@ void ShaderProgram::initializeShaders() {
         &files->postProcessingFragmentShaderFiles;
     ShaderFiles *postProcessingVertexShaderFilesIterator =
         &files->postProcessingVertexShaderFiles;
-
-    if (shaderProps->atomicTextures > 0 && atomicImageTexture == NULL) {
-        atomicImageTexture = new unsigned int[shaderProps->atomicTextures];
-        for (int i = 0; i < shaderProps->atomicTextures; i++)
-            atomicImageTexture[i] = 0;
-    }
 
     while (fragmentShaderFilesIterator != NULL) {
         VertexShaderCompilationArgs *vertexArgs =
@@ -33,24 +102,26 @@ void ShaderProgram::initializeShaders() {
         currentStage->vertexShader = new VertexShader(
             vertexShaderFilesIterator->fileContent, vertexArgs);
 
+        // A stage that ships its own .vert file (currently only ncs-1.vert)
+        // drives a static per-particle point grid with additive blending
+        // instead of the default full-screen quad -- see render().
+        currentStage->isParticleStage = !vertexShaderFilesIterator->fileContent.empty();
+        if (currentStage->isParticleStage && particleGrid.vbo == 0)
+            particleGrid.build(shaderProps->windowWidth, shaderProps->windowHeight);
+
         currentStage->vertexShaderFile = vertexShaderFilesIterator;
         currentStage->fragmentShaderFile = fragmentShaderFilesIterator;
 
         FragmentShaderCompilationArgs *args =
-            currentStage != startStage
-                ? new FragmentShaderCompilationArgs(
-                      shaderProps->windowWidth, shaderProps->windowHeight,
-                      &currentStage->glProgram, &currentStage->uniformLocations)
-                : new FragmentShaderCompilationArgs(
-                      shaderProps->windowWidth, shaderProps->windowHeight,
-                      &currentStage->glProgram, &currentStage->uniformLocations,
-                      shaderProps->atomicTextures, atomicImageTexture);
+            new FragmentShaderCompilationArgs(
+                shaderProps->windowWidth, shaderProps->windowHeight,
+                &currentStage->glProgram, &currentStage->uniformLocations);
 
         currentStage->fragmentShader =
             new FragmentShader(fragmentShaderFilesIterator->fileContent, args);
 
-        // Every stage renders to its own FBO; render() blits the final one
-        // centered onto the (surface-sized) default framebuffer.
+        // Every stage renders to its own FBO; render() composites the final
+        // one centered onto the (surface-sized) default framebuffer.
         currentStage->fragmentShader->bind2DTextureToFrameBuffer(
             shaderProps->className);
 
@@ -88,16 +159,9 @@ void ShaderProgram::initializeShaders() {
                 postProcessingFragmentShaderFilesIterator;
 
             FragmentShaderCompilationArgs *args =
-                currentStage != startStage
-                    ? new FragmentShaderCompilationArgs(
-                          shaderProps->windowWidth, shaderProps->windowHeight,
-                          &currentStage->glProgram,
-                          &currentStage->uniformLocations)
-                    : new FragmentShaderCompilationArgs(
-                          shaderProps->windowWidth, shaderProps->windowHeight,
-                          &currentStage->glProgram,
-                          &currentStage->uniformLocations,
-                          shaderProps->atomicTextures, atomicImageTexture);
+                new FragmentShaderCompilationArgs(
+                    shaderProps->windowWidth, shaderProps->windowHeight,
+                    &currentStage->glProgram, &currentStage->uniformLocations);
 
             currentStage->fragmentShader = new FragmentShader(
                 postProcessingFragmentShaderFilesIterator->fileContent, args);
@@ -117,6 +181,18 @@ void ShaderProgram::initializeShaders() {
 
             currentStage = currentStage->next;
         }
+
+    if (blitFragmentShader == NULL) {
+        VertexShaderCompilationArgs *blitVertexArgs =
+            new VertexShaderCompilationArgs(shaderProps->windowWidth,
+                shaderProps->windowHeight, &blitProgram, &blitUniformLocations);
+        blitVertexShader = new VertexShader(blitVertexShaderSource, blitVertexArgs);
+
+        FragmentShaderCompilationArgs *blitFragmentArgs =
+            new FragmentShaderCompilationArgs(shaderProps->windowWidth,
+                shaderProps->windowHeight, &blitProgram, &blitUniformLocations);
+        blitFragmentShader = new FragmentShader(blitFragmentShaderSource, blitFragmentArgs);
+    }
 }
 
 #define TWOPI 6.28318530718
@@ -353,7 +429,9 @@ void ShaderProgram::render() {
 
         glUseProgram(currentStage->glProgram);
 
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER,
+        // ES 2.0 has a single GL_FRAMEBUFFER target (no separate read/draw
+        // targets -- that split is ES 3.0+).
+        glBindFramebuffer(GL_FRAMEBUFFER,
                           currentStage->fragmentShader->frameBufferObject);
         glViewport(0, 0, shaderProps->windowWidth, shaderProps->windowHeight);
 
@@ -365,8 +443,24 @@ void ShaderProgram::render() {
             audioShaderStages->smoothStage->fragmentShader->outputTexture,
             currentStage->uniformLocations);
 
-        currentStage->vertexShader->draw(
-            currentStage != startStage ? &prevStageTexture : NULL);
+        if (currentStage->isParticleStage) {
+            // ES 2.0 replacement for the atomic-image scatter-add: clear this
+            // stage's own accumulation buffer (replaces the old
+            // imageAtomicExchange read+reset in the *next* stage) and additive-
+            // blend one point per particle into it (replaces imageAtomicAdd).
+            glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_ONE, GL_ONE);
+            currentStage->vertexShader->drawPoints(particleGrid.vbo, particleGrid.pointCount);
+            // Restore the (GL_ONE, GL_ZERO) "replace" blend func the rest of
+            // this loop already runs under (GL_BLEND itself is left enabled
+            // by the audio pass above; see applyGravityPassShader).
+            glBlendFunc(GL_ONE, GL_ZERO);
+        } else {
+            currentStage->vertexShader->draw(
+                currentStage != startStage ? &prevStageTexture : NULL);
+        }
 
         prevStageTexture = currentStage->fragmentShader->outputTexture;
 
@@ -376,22 +470,35 @@ void ShaderProgram::render() {
     };
 
     // Composite the fixed square canvas centered onto the real surface. Bigger
-    // surface -> transparent margin; smaller -> centered crop (glBlitFramebuffer
-    // clips the destination), matching how the gtk-layer-shell window crops its
-    // oversized sphere.
+    // surface -> transparent margin; smaller -> centered crop, matching how the
+    // gtk-layer-shell window crops its oversized sphere. ES 2.0 has no
+    // glBlitFramebuffer (ES 3.0+ only), so this is a manual textured-quad draw
+    // instead: glViewport positions/sizes the destination rect, and anything
+    // outside the default framebuffer's actual pixels is clipped by GL for
+    // free, reproducing the blit's destination-clipping behavior.
     const int canvas = shaderProps->windowWidth;
     const int offX = (shaderProps->surfaceWidth - canvas) / 2;
     const int offY = (shaderProps->surfaceHeight - canvas) / 2;
 
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, defaultID);
+    glBindFramebuffer(GL_FRAMEBUFFER, defaultID);
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    glBindFramebuffer(GL_READ_FRAMEBUFFER,
-                      lastStage->fragmentShader->frameBufferObject);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, defaultID);
-    glBlitFramebuffer(0, 0, canvas, canvas, offX, offY, offX + canvas,
-                      offY + canvas, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    glViewport(offX, offY, canvas, canvas);
+    glUseProgram(blitProgram);
+    auto resLoc = blitUniformLocations.find("resolution");
+    if (resLoc != blitUniformLocations.end())
+        glUniform2f(resLoc->second, (float)canvas, (float)canvas);
+    auto offLoc = blitUniformLocations.find("offset");
+    if (offLoc != blitUniformLocations.end())
+        glUniform2f(offLoc->second, (float)offX, (float)offY);
+    // `tex` defaults to sampler unit 0 (never explicitly bound, same
+    // convention every other chained stage relies on) -- make that explicit
+    // rather than relying on whichever unit the last updateUniforms() call
+    // happened to leave active.
+    glActiveTexture(GL_TEXTURE0);
+    blitVertexShader->draw(&lastStage->fragmentShader->outputTexture);
+    glUseProgram(0);
 
     ticks++;
 }

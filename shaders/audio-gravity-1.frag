@@ -1,18 +1,18 @@
 // Adapted from GLava's Gravity Shader by jarcode-foss
 // Licensed under GPL-3.0
 
-#version 320 es
+#version 100
 precision highp float;
 precision highp int;
-precision highp sampler2D;
 
 uniform sampler2D audioR;
 uniform float diff;
-
-out vec4 FragColor;
+// Nx1 audio texture width for this draw (viewport width); ES 2.0 has no
+// texelFetch, so texture2D needs a normalized UV instead of an integer texel.
+uniform int audioSize;
 
 void main()
 {
 
-    FragColor.r = texelFetch(audioR, ivec2(int(gl_FragCoord.x), 0), 0).r - diff;
+    gl_FragColor.r = texture2D(audioR, vec2((gl_FragCoord.x) / float(audioSize), 0.5)).r - diff;
 }

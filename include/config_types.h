@@ -34,7 +34,6 @@ class ShaderProps {
     uint16_t surfaceWidth, surfaceHeight;
 
     unsigned int fps;
-    uint16_t atomicTextures;
 
     AudioOverride *audioOverrides = NULL;
 };

@@ -3,22 +3,37 @@
 precision highp float;
 precision highp int;
 
+// ES 2.0 replacement for the ES 3.2 atomic-image particle-accumulation pass
+// (see shaders/ncs-1.frag / shaders/ncs-2.frag on the ES 3.2 branch). There is
+// no image load/store or atomics on ES 2.0, so the per-particle scatter-add is
+// done the ES 2.0-native way instead: each particle is a real GL_POINTS vertex,
+// and the additive blend stage (glBlendFunc(GL_ONE, GL_ONE) in the C++ draw
+// call) accumulates overlapping splats order-independently, the same way
+// imageAtomicAdd did. One vertex per surviving grid pixel; the pixel set
+// (post particleThin dropout) is precomputed on the CPU into aPos's VBO
+// (see ParticleGrid::build in shader_program.cpp), since a vertex shader can't
+// discard itself the way the old fragment-per-pixel pass could.
+//
+// NOTE: this reads audioL/audioR via vertex texture fetch (VTF). VTF is
+// optional on ES 2.0 (GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS may be 0 on some
+// hardware); this path assumes it is available.
+
+attribute vec2 aPos;
+
 uniform vec2 resolution;
 uniform sampler2D audioL;
 uniform sampler2D audioR;
 uniform float time;
 
-// The accumulated particle-coverage buffer produced by the ncs-1 stage
-// (ncs-1.vert/ncs-1.frag). On ES 3.2 this stage instead read
-// atomicImageTexture0 directly via imageAtomicExchange; on ES 2.0 stage
-// chaining already binds the previous stage's output texture to unit 0 (see
-// ShaderProgram::render()/VertexShader::draw), so this is just the normal
-// `tex` sampler convention the other stages (e.g. glow-1.frag) use.
-uniform sampler2D tex;
+// Per-splat parameters for the point-sprite fragment shader (ncs-1.frag).
+varying float vSplatSize;
+varying float vSplatFeather;
+varying float vSplatOpacity;
 
 // ES has no 1D samplers; audio textures are Nx1 2D. Match the old sampler1D lookup.
 #define AUDIO1D(t, x) texture2D(t, vec2((x), 0.5))
 
+#include ":lygia-pnoise.glsl"
 #include ":$CONFIGFILE"
 
 void defaultAudioValues()
@@ -70,7 +85,7 @@ void defaultParticleValues()
     particle.color = vec4(0, 0, 1, 1);
     particle.size = 3;
     particle.feather = 0.5;
-    particle.position = vec3(gl_FragCoord.xy, 0);
+    particle.position = vec3(aPos, 0);
     particle.opacityMultiplier = 1.0;
     particle.colorIntensityAddStrength = 0.1;
     particle.antiAlias = 4.5;
@@ -195,6 +210,104 @@ void setAudio()
     audio.intermediateAudios[7] = audioFractal8;
 }
 
+float octaveNoise(vec4 p, vec4 flow, vec4 rep)
+{
+    float total = 0.0;
+    float frequency = 1.0;
+    float amplitude = 1.0;
+    float value = 0.0;
+    for (int i = 0; i < fractalField.complexity; i += 1) {
+        vec4 fractalFieldInput = p;
+        modifyNoiseCoordinates(fractalFieldInput);
+        fractalFieldInput += flow * time;
+        fractalFieldInput *= frequency;
+        value += (pnoise(vec4((fractalFieldInput)), rep)) * amplitude;
+        total += amplitude;
+        amplitude *= fractalField.octaveMultiplier;
+        frequency *= fractalField.octaveScale;
+    }
+    return value / total;
+}
+float fbm3(vec4 p, vec4 flow)
+{
+    vec4 flowXLoopFrames = flow * float(fractalField.loopFrames);
+    vec4 rep = vec4(fractalField.loop * ivec4(fractalField.fScale * flowXLoopFrames / fractalField.dimensions));
+    flowXLoopFrames = mix(vec4(1), flowXLoopFrames, 1. - step(abs(flowXLoopFrames), vec4(0)));
+    vec4 newFScale = mix(fractalField.dimensions * rep / (flowXLoopFrames), vec4(fractalField.fScale), vec4(1) - abs(float(fractalField.loop) * sign(flow)));
+    p = newFScale * p / fractalField.dimensions;
+    flow *= newFScale / fractalField.dimensions;
+    vec3 originalSphereCenter = sphere.center;
+    sphere.center *= newFScale.xyz / fractalField.dimensions.xyz;
+    float oN = (fractalField.constantNoiseMultiplier + audio.value) * (octaveNoise(p, flow, rep));
+    oN = sign(oN) * pow(abs(oN), fractalField.gamma);
+    sphere.center = originalSphereCenter;
+    oN = fractalField.offset + fractalField.noiseMultiplier * oN;
+    oN = clamp(oN, fractalField.minVal, fractalField.maxVal);
+    return oN;
+}
+vec3 sphereCoords(vec3 particleCoords, float zLayer, float zLayerDistance)
+{
+    vec3 newPos;
+    float u = (TWOPI * (((particleCoords.x) / (resolution.x))));
+    float v = PI * (particleCoords.y / resolution.y);
+    newPos.x = resolution.x * sin(u) * sin(v);
+    newPos.z = baseForm.zSize * cos(u) * sin(v);
+    newPos.y = resolution.y * cos(v);
+    newPos.xy += resolution.xy / 2.;
+    newPos -= zLayer * (vec3(resolution.xy / 2., baseForm.zSize / 2.) / baseForm.numParticles.z) * normalize(newPos - vec3(resolution.xy / 2.0, 0));
+    return newPos;
+}
+vec3 transformedCoords(vec3 particleCoords)
+{
+    particleCoords = (baseForm.rotations) * (particleCoords - baseForm.rotationCenter);
+    return (particleCoords + vec3(resolution.xy / 2.0, 0));
+}
+
+// Replaces processZLayer()'s kernel loop + imageAtomicAdd: computes the single
+// splat center position for this particle (one vertex == one particle, always
+// zLayer 0 — this grid is built for the single-z-layer case the active config
+// (ncs.glsl) actually produces; see ParticleGrid::build). The splat footprint
+// itself (the old -size..size double loop) is evaluated per-fragment in
+// ncs-1.frag using gl_PointCoord.
+void computeParticle()
+{
+    vec3 particleCoords = particle.position;
+    particleCoords = mix(particleCoords, sphereCoords(particleCoords, 0.0, 0.0), float(baseForm.type));
+    vec4 old = vec4(particleCoords, 0);
+    vec3 displacementValues = vec3(0);
+    vec4 flows = fractalField.flows;
+    float xFBM3 = fbm3(old.xyzw, flows);
+    float yFBM3 = fbm3(old.yzxw, flows.yzxw);
+    float zFBM3 = fbm3(old.zxyw, flows.zxyw);
+    fractalField.noise = vec3(xFBM3, yFBM3, zFBM3);
+    setPropsWithNoise();
+    displacementValues.xyz += mix(vec3((fractalField.displacements.x) * xFBM3, (fractalField.displacements.y) * yFBM3, (fractalField.displacements.z) * zFBM3), (fractalField.displacements.x) * xFBM3 * normalize(particleCoords.xyz - vec3(resolution.xy / 2.0, 0)), float(fractalField.displacementType));
+    particleCoords.xyz += displacementValues;
+    float radius = sphere.radius, blurSize = particle.antiAlias / resolution.y;
+    radius += audio.bass;
+    vec3 sphereCenterCoords = sphere.center;
+    vec3 vectorFromSphereCenter = (particleCoords - sphereCenterCoords);
+    vec3 normalizedVector = normalize(vectorFromSphereCenter);
+    vec3 newPos = (sphereCenterCoords + radius * normalizedVector);
+    float diff = length(newPos - particleCoords);
+    diff *= (clamp((smoothstep(0.0, sphere.feather * (radius), diff)) + blurSize, blurSize, 1.0 + blurSize));
+    particleCoords += step(length(vectorFromSphereCenter), radius) * sphere.strength * diff * normalizedVector * sphere.scale;
+    modifySphericalDisplacement();
+    particle.size = int(max(0., float(particle.size) + fractalField.affectSize * (xFBM3 + yFBM3 + zFBM3)));
+    particle.opacityMultiplier = max(particle.opacityMultiplier + fractalField.affectOpacity * (xFBM3 + yFBM3 + zFBM3), 0.);
+
+    vec3 finalCoords = transformedCoords(particleCoords.xyz) / baseForm.scale;
+    finalCoords += vec3(resolution.xy / 2., 0) * (1. - 1. / (baseForm.scale));
+
+    vSplatSize = float(particle.size);
+    vSplatFeather = particle.feather;
+    vSplatOpacity = particle.opacityMultiplier;
+
+    vec2 ndc = (finalCoords.xy / resolution.xy) * 2.0 - 1.0;
+    gl_Position = vec4(ndc, 0.0, 1.0);
+    gl_PointSize = max(1.0, 2.0 * float(particle.size) / baseForm.scale.x);
+}
+
 void main()
 {
     defaultAudioValues();
@@ -205,18 +318,5 @@ void main()
     init();
     setAudio();
     setProps();
-
-    // ES 3.2 read + reset the atomic accumulator here (imageAtomicExchange).
-    // On ES 2.0 the accumulator is a normal texture (see ncs-1.vert/frag) that
-    // additive blending already summed per-pixel; the "reset" is just next
-    // frame's glClear of that stage's FBO (ShaderProgram::render()).
-    float actualDepth = texture2D(tex, gl_FragCoord.xy / resolution.xy).r;
-
-    vec4 noiseCoords = vec4(1, 1, 1, 0);
-    modifyNoiseCoordinates(noiseCoords);
-    fractalField.noise = vec3(1);
-    setPropsWithNoise();
-    modifySphericalDisplacement();
-    gl_FragColor = step(0.0, actualDepth) * vec4(particle.color.xyz * particle.color.w, particle.color.w);
-    gl_FragColor *= (pow(actualDepth, particle.colorIntensityAddStrength)) * (1.0 - pow(1.0 - particle.color.w, actualDepth));
+    computeParticle();
 }

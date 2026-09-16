@@ -31,7 +31,6 @@ constexpr float smoothFactor = .025f;
 constexpr const char *shaderName = "ncs";
 constexpr const char *className = "ncs";
 constexpr const char *configFileName = "ncs.glsl";
-constexpr unsigned int atomicTextures = 1;
 constexpr unsigned int fps = 60;
 
 // Fixed square canvas the shader pipeline always renders at. The sphere geometry

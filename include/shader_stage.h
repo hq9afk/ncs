@@ -12,6 +12,13 @@ public:
 
     ShaderFiles *fragmentShaderFile = NULL, *vertexShaderFile = NULL;
 
+    // True when this stage shipped its own .vert file (currently only
+    // ncs-1.vert) instead of falling back to the default full-screen-quad
+    // vertex shader. ShaderProgram::render() uses this to switch to the
+    // point-sprite + additive-blend draw path (the ES 2.0 replacement for the
+    // ES 3.2 atomic-image particle accumulation — see ncs-1.vert).
+    bool isParticleStage = false;
+
     /// A Map to hold locations for uniforms in the current shader stage.
     std::map<std::string, int> uniformLocations = { { "audioR", -1 },
         { "audioL", -1 } };

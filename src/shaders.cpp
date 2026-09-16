@@ -53,22 +53,21 @@ void VertexShader::compileShaderSource(
 
     glAttachShader(*glProgram, shaderObject);
 
-    // ES rejects linking a program that has no fragment shader; the matching
-    // FragmentShader attaches next and does the link for this program.
+    // ES 2.0 has no `layout(location = ...)`, so pin attribute location 0 to
+    // "aPos" explicitly before linking (the matching FragmentShader attaches
+    // next and does the link). Every vertex shader in this codebase (the
+    // default full-screen quad, ncs-1.vert, the blit shader) uses "aPos" for
+    // its sole vertex attribute, so one bind covers all of them; a shader
+    // without an "aPos" (there are none) would just make this a no-op.
+    glBindAttribLocation(*glProgram, 0, "aPos");
 
-    glGenVertexArrays(1, &vertexArrayObject);
+    // ES 2.0 has no VAOs (core from ES 3.0); vertex attrib state is global
+    // and gets re-bound on every draw() / drawPoints() call instead.
     glGenBuffers(1, &vertexBufferObject);
-
-    glBindVertexArray(vertexArrayObject);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, vertexBufferObject);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(buf), buf, GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, vertexBufferObject);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (void*)0);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(buf), buf, GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    glDisableVertexAttribArray(0);
-
-    glBindVertexArray(0);
     glUseProgram(0);
 
     if (args != NULL)
@@ -77,19 +76,31 @@ void VertexShader::compileShaderSource(
 
 void VertexShader::draw(unsigned int* texture)
 {
-    glBindVertexArray(vertexArrayObject);
     if (texture != NULL)
         glBindTexture(GL_TEXTURE_2D, *texture);
+    glBindBuffer(GL_ARRAY_BUFFER, vertexBufferObject);
     glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (void*)0);
     glDrawArrays(GL_TRIANGLES, 0, 6);
     glDisableVertexAttribArray(0);
-    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+void VertexShader::drawPoints(unsigned int pointVbo, int count)
+{
+    if (count <= 0)
+        return;
+    glBindBuffer(GL_ARRAY_BUFFER, pointVbo);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void*)0);
+    glDrawArrays(GL_POINTS, 0, count);
+    glDisableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
 VertexShader::~VertexShader()
 {
     glDeleteBuffers(1, &vertexBufferObject);
-    glDeleteVertexArrays(1, &vertexArrayObject);
     glDeleteShader(shaderObject);
 }
 
@@ -145,40 +156,11 @@ void FragmentShader::compileShaderSource(
         (*args->uniformLocations)[name] = i;
     }
 
-    int numAtomicTextures = 0;
-
-    unsigned int* atomicImageTexture = NULL;
-
-    if (args != NULL && ((FragmentShaderCompilationArgs*)args)->atomicImageTexture != NULL) {
-        numAtomicTextures = ((FragmentShaderCompilationArgs*)args)->numAtomicTextures;
-
-        atomicImageTexture = ((FragmentShaderCompilationArgs*)args)->atomicImageTexture;
-    }
-
-    unsigned int imageUnit = 0;
-
-    for (int i = 0; i < numAtomicTextures; i++) {
-
-        glGenTextures(1, &atomicImageTexture[i]);
-        glBindTexture(GL_TEXTURE_2D, atomicImageTexture[i]);
-        glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32UI, windowWidth, windowHeight);
-
-        glBindImageTexture(imageUnit, atomicImageTexture[i], 0, GL_FALSE, 0,
-            GL_READ_WRITE, GL_R32UI);
-
-        auto uniformLocationsIterator = (*args->uniformLocations).find(std::string("atomicImageTexture" + std::to_string(i)).c_str());
-        if (uniformLocationsIterator == (*args->uniformLocations).end()) {
-            imageUnit++;
-            continue;
-        }
-        GLint imageLocation = uniformLocationsIterator->second;
-
-        glProgramUniform1i(*glProgram, imageLocation, imageUnit);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, atomicImageTexture[i]);
-
-        imageUnit++;
-    }
+    // ES 3.2 bound the shared atomic image texture(s) here (glTexStorage2D /
+    // glBindImageTexture). ES 2.0 has no image load/store; the particle stage
+    // that used it now reads its input like any other chained stage (a plain
+    // `tex` sampler bound by ShaderProgram::render(), see ncs-2.frag) and
+    // writes via additive blending instead of imageAtomicAdd (see ncs-1.vert).
 
     glUseProgram(0);
 

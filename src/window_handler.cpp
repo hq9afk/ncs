@@ -87,7 +87,7 @@ void ShaderWindowHandler::initEGL() {
         EGL_SURFACE_TYPE,
         EGL_WINDOW_BIT,
         EGL_RENDERABLE_TYPE,
-        EGL_OPENGL_ES3_BIT,
+        EGL_OPENGL_ES2_BIT,
         EGL_RED_SIZE,
         8,
         EGL_GREEN_SIZE,
@@ -105,7 +105,7 @@ void ShaderWindowHandler::initEGL() {
         Errors::throwError("no matching EGL config", "", "In");
 
     const EGLint contextAttribs[] = {
-        EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 2, EGL_NONE,
+        EGL_CONTEXT_MAJOR_VERSION, 2, EGL_CONTEXT_MINOR_VERSION, 0, EGL_NONE,
     };
     eglContext =
         eglCreateContext(eglDisplay, config, EGL_NO_CONTEXT, contextAttribs);
@@ -203,13 +203,9 @@ void ShaderWindowHandler::applyResize(int width, int height) {
     }
     shaderProgram.startStage = NULL;
 
-    // Clean up atomic textures
-    if (shaderProgram.atomicImageTexture != NULL) {
-        glDeleteTextures(shaderProgram.shaderProps->atomicTextures,
-                         shaderProgram.atomicImageTexture);
-        delete[] shaderProgram.atomicImageTexture;
-        shaderProgram.atomicImageTexture = NULL;
-    }
+    // Clean up the particle grid VBO (rebuilt for the new canvas size in the
+    // next initializeShaders() call, triggered by ticks = 0 below)
+    shaderProgram.particleGrid.destroy();
 
     // Trigger a pipeline and FBO rebuild on the next frame
     shaderProgram.ticks = 0;
