@@ -121,9 +121,10 @@ void ShaderProgram::initializeShaders() {
             new FragmentShader(fragmentShaderFilesIterator->fileContent, args);
 
         // Every stage renders to its own FBO; render() composites the final
-        // one centered onto the (surface-sized) default framebuffer.
+        // one centered onto the (surface-sized) default framebuffer. The
+        // particle stage needs a float target -- see bind2DTextureToFrameBuffer.
         currentStage->fragmentShader->bind2DTextureToFrameBuffer(
-            shaderProps->className);
+            shaderProps->className, currentStage->isParticleStage);
 
         fragmentShaderFilesIterator = fragmentShaderFilesIterator->next;
 

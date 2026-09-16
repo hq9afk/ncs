@@ -16,7 +16,7 @@ void setProps()
 {
 
     particle.color = vec4(0.0353, 0.5216, 0.9725, 0.3);
-    particle.size = 4;
+    particle.size = 8;
 
     particle.feather = 1.0;
 

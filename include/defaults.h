@@ -45,6 +45,9 @@ constexpr unsigned int sphereCanvas = 1000;
 constexpr unsigned int windowWidth = 1000;
 constexpr unsigned int windowHeight = 1000;
 
+// Canvas size on resize = canvasScale * min(surfaceWidth, surfaceHeight).
+constexpr float canvasScale = 0.7f;
+
 } // namespace Defaults
 
 #endif

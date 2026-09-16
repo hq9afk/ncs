@@ -1,12 +1,11 @@
 #include "window_handler.h"
+#include "defaults.h"
 #include "errors.h"
 
 #include <algorithm>
 #include <cstring>
 
-ShaderWindowHandler::ShaderWindowHandler(ShaderProps *shaderProps,
-                                         PipeWireHandler *pipeWireHandler,
-                                         AudioShaderStages *audioShaderStages) {
+ShaderWindowHandler::ShaderWindowHandler(ShaderProps *shaderProps, PipeWireHandler *pipeWireHandler, AudioShaderStages *audioShaderStages) {
 
     shaderProgram.shaderProps = shaderProps;
 
@@ -14,50 +13,34 @@ ShaderWindowHandler::ShaderWindowHandler(ShaderProps *shaderProps,
         return;
 
     shaderProgram.pipeWireSetting = pipeWireHandler;
-
-    shaderProgram.files =
-        new Files(std::string(shaderProgram.shaderProps->shaderName),
-                  std::string(shaderProps->configFileName));
+    shaderProgram.files = new Files(std::string(shaderProgram.shaderProps->shaderName), std::string(shaderProps->configFileName));
     shaderProgram.files->LoadFiles(shaderProps->audioOverrides);
-
     shaderProgram.audioShaderStages = audioShaderStages;
-
     shaderProgram.fps = shaderProps->fps;
 }
 
-void ShaderWindowHandler::registryGlobal(void *data, wl_registry *reg,
-                                         uint32_t name, const char *interface,
-                                         uint32_t version) {
+void ShaderWindowHandler::registryGlobal(void *data, wl_registry *reg, uint32_t name, const char *interface, uint32_t version) {
     ShaderWindowHandler *self = (ShaderWindowHandler *)data;
 
     if (strcmp(interface, wl_compositor_interface.name) == 0)
-        self->compositor = (wl_compositor *)wl_registry_bind(
-            reg, name, &wl_compositor_interface, 4);
+        self->compositor = (wl_compositor *)wl_registry_bind(reg, name, &wl_compositor_interface, 4);
     else if (strcmp(interface, xdg_wm_base_interface.name) == 0)
-        self->wmBase = (xdg_wm_base *)wl_registry_bind(
-            reg, name, &xdg_wm_base_interface, 1);
+        self->wmBase = (xdg_wm_base *)wl_registry_bind(reg, name, &xdg_wm_base_interface, 1);
     else if (strcmp(interface, zxdg_decoration_manager_v1_interface.name) == 0)
-        self->decorationManager =
-            (zxdg_decoration_manager_v1 *)wl_registry_bind(
-                reg, name, &zxdg_decoration_manager_v1_interface, 1);
+        self->decorationManager = (zxdg_decoration_manager_v1 *)wl_registry_bind(reg, name, &zxdg_decoration_manager_v1_interface, 1);
 }
 
-void ShaderWindowHandler::registryGlobalRemove(void *data, wl_registry *reg,
-                                               uint32_t name) {}
+void ShaderWindowHandler::registryGlobalRemove(void *data, wl_registry *reg, uint32_t name) {}
 
-void ShaderWindowHandler::wmBasePing(void *data, xdg_wm_base *base,
-                                     uint32_t serial) {
+void ShaderWindowHandler::wmBasePing(void *data, xdg_wm_base *base, uint32_t serial) {
     xdg_wm_base_pong(base, serial);
 }
 
-void ShaderWindowHandler::xdgSurfaceConfigure(void *data, xdg_surface *surf,
-                                              uint32_t serial) {
+void ShaderWindowHandler::xdgSurfaceConfigure(void *data, xdg_surface *surf, uint32_t serial) {
     xdg_surface_ack_configure(surf, serial);
 }
 
-void ShaderWindowHandler::toplevelConfigure(void *data, xdg_toplevel *top,
-                                            int32_t width, int32_t height,
-                                            wl_array *states) {
+void ShaderWindowHandler::toplevelConfigure(void *data, xdg_toplevel *top, int32_t width, int32_t height, wl_array *states) {
     ShaderWindowHandler *self = (ShaderWindowHandler *)data;
 
     // Zero means "you decide"; keep the configured default size.
@@ -105,15 +88,17 @@ void ShaderWindowHandler::initEGL() {
         Errors::throwError("no matching EGL config", "", "In");
 
     const EGLint contextAttribs[] = {
-        EGL_CONTEXT_MAJOR_VERSION, 2, EGL_CONTEXT_MINOR_VERSION, 0, EGL_NONE,
+        EGL_CONTEXT_MAJOR_VERSION,
+        2,
+        EGL_CONTEXT_MINOR_VERSION,
+        0,
+        EGL_NONE,
     };
-    eglContext =
-        eglCreateContext(eglDisplay, config, EGL_NO_CONTEXT, contextAttribs);
+    eglContext = eglCreateContext(eglDisplay, config, EGL_NO_CONTEXT, contextAttribs);
     if (eglContext == EGL_NO_CONTEXT)
         Errors::throwError("eglCreateContext failed", "", "In");
 
-    eglWindow = wl_egl_window_create(surface, props->surfaceWidth,
-                                     props->surfaceHeight);
+    eglWindow = wl_egl_window_create(surface, props->surfaceWidth, props->surfaceHeight);
     eglSurface = eglCreateWindowSurface(eglDisplay, config,
                                         (EGLNativeWindowType)eglWindow, NULL);
     if (eglSurface == EGL_NO_SURFACE)
@@ -139,8 +124,8 @@ void ShaderWindowHandler::setup() {
     wl_display_roundtrip(display);
 
     if (compositor == NULL || wmBase == NULL)
-        Errors::throwError(
-            "compositor does not expose wl_compositor / xdg_wm_base", "", "In");
+        Errors::throwError("compositor does not expose wl_compositor / xdg_wm_base",
+                           "", "In");
 
     static const xdg_wm_base_listener wmBaseListener = {.ping = wmBasePing};
     xdg_wm_base_add_listener(wmBase, &wmBaseListener, this);
@@ -189,8 +174,8 @@ void ShaderWindowHandler::applyResize(int width, int height) {
     shaderProgram.shaderProps->surfaceWidth = width;
     shaderProgram.shaderProps->surfaceHeight = height;
 
-    // Dynamically scale the canvas to half the smaller window dimension
-    int newCanvasSize = std::min(width, height) / 2;
+    // Dynamically scale the canvas relative to the smaller window dimension
+    int newCanvasSize = std::min(width, height) * Defaults::canvasScale;
     shaderProgram.shaderProps->windowWidth = newCanvasSize;
     shaderProgram.shaderProps->windowHeight = newCanvasSize;
 
@@ -224,8 +209,7 @@ void ShaderWindowHandler::swap() { eglSwapBuffers(eglDisplay, eglSurface); }
 
 ShaderWindowHandler::~ShaderWindowHandler() {
     if (eglDisplay != EGL_NO_DISPLAY) {
-        eglMakeCurrent(eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE,
-                       EGL_NO_CONTEXT);
+        eglMakeCurrent(eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         if (eglSurface != EGL_NO_SURFACE)
             eglDestroySurface(eglDisplay, eglSurface);
         if (eglContext != EGL_NO_CONTEXT)
