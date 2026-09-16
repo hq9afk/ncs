@@ -34,8 +34,8 @@ constexpr const char *configFileName = "ncs.glsl";
 constexpr unsigned int atomicTextures = 1;
 constexpr unsigned int fps = 60;
 
-// Fixed square canvas the shader pipeline always renders at. The sphere geometry
-// is defined in pixels relative to this (see shaders/ncs.glsl:
+// Fixed square canvas the shader pipeline always renders at. The sphere
+// geometry is defined in pixels relative to this (see shaders/ncs.glsl:
 // sphere.radius = .7236 * resolution.x), so it must stay constant regardless of
 // the Wayland surface size, and square, or sphereCoords() yields an ellipsoid.
 // 1000 matches the gtk-layer-shell branch.
@@ -45,6 +45,9 @@ constexpr unsigned int sphereCanvas = 1000;
 // canvas above is blitted centered into whatever we get.
 constexpr unsigned int windowWidth = 1000;
 constexpr unsigned int windowHeight = 1000;
+
+// Canvas size on resize = canvasScale * min(surfaceWidth, surfaceHeight).
+constexpr float canvasScale = 0.7f;
 
 } // namespace Defaults
 

@@ -1,4 +1,5 @@
 #include "window_handler.h"
+#include "defaults.h"
 #include "errors.h"
 
 #include <algorithm>
@@ -189,8 +190,8 @@ void ShaderWindowHandler::applyResize(int width, int height) {
     shaderProgram.shaderProps->surfaceWidth = width;
     shaderProgram.shaderProps->surfaceHeight = height;
 
-    // Dynamically scale the canvas to half the smaller window dimension
-    int newCanvasSize = std::min(width, height) / 2;
+    // Dynamically scale the canvas relative to the smaller window dimension
+    int newCanvasSize = std::min(width, height) * Defaults::canvasScale;
     shaderProgram.shaderProps->windowWidth = newCanvasSize;
     shaderProgram.shaderProps->windowHeight = newCanvasSize;
 
