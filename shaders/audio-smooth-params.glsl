@@ -21,7 +21,7 @@ float smooth_audio(in sampler2D tex, int tex_sz, highp float idx)
 
     float smin = scale_audio(clamp(idx - smooth_factor, 0.0, 1.0)) * float(tex_sz),
           smax = scale_audio(clamp(idx + smooth_factor, 0.0, 1.0)) * float(tex_sz);
-    float m = ((smax - smin) / 2.0F), s, w;
+    float m = ((smax - smin) / 2.0), s, w;
     float rm = smin + m;
 
     // ES 2.0 has no texelFetch; NEAREST-filtered texture2D at the texel's
@@ -31,19 +31,19 @@ float smooth_audio(in sampler2D tex, int tex_sz, highp float idx)
 
     if (sample_mode == 0) {
         float avg = 0.0, weight = 0.0;
-        for (s = smin; s <= smax; s += 1.0F) {
+        for (s = smin; s <= smax; s += 1.0) {
             w = ROUND_FORMULA(clamp((m - abs(rm - s)) / m, 0.0, 1.0));
             weight += w;
-            avg += AUDIO_TEXEL(tex, int(round(s))).r * w;
+            avg += AUDIO_TEXEL(tex, int(floor(s + 0.5))).r * w;
         }
         avg /= weight;
         return avg;
     } else if (sample_mode == 2) {
         float vmax = 0.0, avg = 0.0, weight = 0.0, v;
-        for (s = smin; s < smax; s += 1.0F) {
+        for (s = smin; s < smax; s += 1.0) {
             w = ROUND_FORMULA(clamp((m - abs(rm - s)) / m, 0.0, 1.0));
             weight += w;
-            v = AUDIO_TEXEL(tex, int(round(s))).r * w;
+            v = AUDIO_TEXEL(tex, int(floor(s + 0.5))).r * w;
             avg += v;
             if (vmax < v)
                 vmax = v;
@@ -51,8 +51,8 @@ float smooth_audio(in sampler2D tex, int tex_sz, highp float idx)
         return (vmax * (1.0 - sample_hybrid_weight)) + ((avg / weight) * sample_hybrid_weight);
     } else if (sample_mode == 1) {
         float vmax = 0.0, v;
-        for (s = smin; s < smax; s += 1.0F) {
-            w = AUDIO_TEXEL(tex, int(round(s))).r * ROUND_FORMULA(clamp((m - abs(rm - s)) / m, 0.0, 1.0));
+        for (s = smin; s < smax; s += 1.0) {
+            w = AUDIO_TEXEL(tex, int(floor(s + 0.5))).r * ROUND_FORMULA(clamp((m - abs(rm - s)) / m, 0.0, 1.0));
             if (vmax < w)
                 vmax = w;
         }
